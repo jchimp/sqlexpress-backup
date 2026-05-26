@@ -28,27 +28,6 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 3. Sends an HTML email summary via SMTP with per-database status
 4. Also supports single-database mode via command-line parameters (no config file needed)
 
-## Config File Parameters
-
-| Parameter | Scope | Required | Default | Description |
-|---|---|---|---|---|
-| `ServerInstance` | Global | No | `.\SQLEXPRESS` | Default SQL Server instance |
-| `RetainCount` | Global | No | `5` | Default number of backups to keep |
-| `LogFile` | Global | No | *(none)* | Append all output to this file |
-| `Smtp.Server` | Global | No | *(none)* | SMTP relay hostname |
-| `Smtp.Port` | Global | No | `25` | SMTP port |
-| `Smtp.From` | Global | No | — | Sender email address |
-| `Smtp.To` | Global | No | — | Array of recipient email addresses |
-| `Smtp.UseSsl` | Global | No | `false` | Enable SSL/TLS |
-| `Smtp.Username` | Global | No | *(empty)* | SMTP auth username (leave empty for relay) |
-| `Smtp.Password` | Global | No | *(empty)* | SMTP auth password |
-| `Smtp.SendOnSuccess` | Global | No | `true` | Send email when all backups succeed |
-| `Smtp.SendOnFailure` | Global | No | `true` | Send email when any backup fails |
-| `Databases[].Name` | Per-DB | **Yes** | — | Database name |
-| `Databases[].BackupPath` | Per-DB | **Yes** | — | Backup destination folder |
-| `Databases[].RetainCount` | Per-DB | No | *(global)* | Override retention for this database |
-| `Databases[].ServerInstance` | Per-DB | No | *(global)* | Override SQL instance for this database |
-
 ## Usage Examples
 
 ### Single database (no config file)
@@ -58,10 +37,10 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 .\Backup-SqlExpressDB.ps1
 
 # Parameterized:
-.\Backup-SqlExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7
+.\Backup-SqlExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7
 
 # Dry run — see what would happen:
-.\Backup-SqlExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7 -DryRun
+.\Backup-SqlExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7 -DryRun
 ```
 
 ### Multi-database with config file
@@ -97,3 +76,67 @@ C:\Scripts\Backup-SqlExpressDB.bat
 8. **Settings tab:**
    - ✅ Allow task to be run on demand
    - ✅ Stop the task if it runs longer than 1 hour
+
+
+## Config File
+
+### Example Config File
+
+Backup-SQLExpressDB.json:
+```json
+{
+    "ServerInstance": ".\\SQLEXPRESS",
+    "RetainCount": 7,
+    "LogFile": "D:\\Backups\\Backup-SQLExpress_Log.log",
+
+    "Smtp": {
+        "Server": "mail.yourdomain.com",
+        "Port": 25,
+        "From": "backups@yourdomain.com",
+        "To": ["admin@yourdomain.com", "user@yourdomain.com"],
+        "UseSsl": false,
+        "Username": "",
+        "Password": "",
+        "SendOnSuccess": true,
+        "SendOnFailure": true
+    },
+
+    "Databases": [
+        {
+            "Name": "Sales",
+            "BackupPath": "D:\\Backups\\Sales"
+        },
+        {
+            "Name": "Inventory",
+            "BackupPath": "D:\\Backups\\Inventory",
+            "RetainCount": 14
+        },
+        {
+            "Name": "HRPortal",
+            "BackupPath": "D:\\Backups\\HRPortal",
+            "ServerInstance": ".\\SQLEXPRESS2"
+        }
+    ]
+}
+```
+
+### Config File Parameters
+
+| Parameter | Scope | Required | Default | Description |
+|---|---|---|---|---|
+| `ServerInstance` | Global | No | `.\SQLEXPRESS` | Default SQL Server instance |
+| `RetainCount` | Global | No | `5` | Default number of backups to keep |
+| `LogFile` | Global | No | *(none)* | Append all output to this file |
+| `Smtp.Server` | Global | No | *(none)* | SMTP relay hostname |
+| `Smtp.Port` | Global | No | `25` | SMTP port |
+| `Smtp.From` | Global | No | — | Sender email address |
+| `Smtp.To` | Global | No | — | Array of recipient email addresses |
+| `Smtp.UseSsl` | Global | No | `false` | Enable SSL/TLS |
+| `Smtp.Username` | Global | No | *(empty)* | SMTP auth username (leave empty for relay) |
+| `Smtp.Password` | Global | No | *(empty)* | SMTP auth password |
+| `Smtp.SendOnSuccess` | Global | No | `true` | Send email when all backups succeed |
+| `Smtp.SendOnFailure` | Global | No | `true` | Send email when any backup fails |
+| `Databases[].Name` | Per-DB | **Yes** | — | Database name |
+| `Databases[].BackupPath` | Per-DB | **Yes** | — | Backup destination folder |
+| `Databases[].RetainCount` | Per-DB | No | *(global)* | Override retention for this database |
+| `Databases[].ServerInstance` | Per-DB | No | *(global)* | Override SQL instance for this database |
