@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Backs up SQL Express databases with compression, retention, and email reporting.
+    Backs up SQL Express databases with retention, and email reporting.
 
 .DESCRIPTION
     Reads a JSON config file to back up one or more SQL Express databases using sqlcmd.
-    Features: compression, checksum verification, retention cleanup, HTML email report.
+    Features: checksum verification, retention cleanup, HTML email report.
     Also supports single-database mode via command-line parameters for one-off runs.
     Use -DryRun to simulate the entire process without executing sqlcmd or deleting files.
 
@@ -47,15 +47,30 @@ param(
     [string]$ConfigFile,
     [string]$DatabaseName,
     [string]$BackupPath,
-    [int]$RetainCount      = 0,
+    [int]$RetainCount = 0,
     [string]$ServerInstance = ".\SQLEXPRESS",
     [string]$LogFile,
     [switch]$DryRun
 )
 
+
+# --- Helpers ------------------------------------------------------------------
+
+function Convert-ToSqlNLiteral {
+    param([AllowNull()][string]$Value)
+    if ($null -eq $Value) { return "NULL" }
+    return "N'" + ($Value -replace "'", "''") + "'"
+}
+
+function Convert-ToSqlBracketIdentifier {
+    param([Parameter(Mandatory)][string]$Name)
+    return "[" + ($Name -replace "]", "]]") + "]"
+}
+
 # --- Logging helper -----------------------------------------------------------
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
+
     $ts    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $tag   = if ($script:DryRunMode) { "[DRY-RUN] " } else { "" }
     $entry = "[$ts] [$Level] ${tag}$Message"
@@ -69,11 +84,20 @@ function Write-Log {
     }
 
     if ($script:ActiveLogFile) {
-        $entry | Out-File -FilePath $script:ActiveLogFile -Append -Encoding UTF8
+        try {
+            $logDir = Split-Path -Path $script:ActiveLogFile -Parent
+            if ($logDir -and -not (Test-Path $logDir)) {
+                New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+            }
+            $entry | Out-File -FilePath $script:ActiveLogFile -Append -Encoding UTF8
+        } catch {
+            Write-Host "[$ts] [WARN] Failed to write to log file $script:ActiveLogFile : $_" -ForegroundColor Yellow
+        }
     }
 }
 
 # --- Backup a single database -------------------------------------------------
+s
 function Backup-SingleDatabase {
     param(
         [string]$DbName,
@@ -93,7 +117,21 @@ function Backup-SingleDatabase {
         Notes      = ""
     }
 
-    # -- Check sqlcmd is available --
+    # Check DBName and backup path
+    if ([string]::IsNullOrWhiteSpace($DbName)) {
+        $result.Status = "FAILED"
+        $result.Notes  = "Database name is blank"
+        Write-Log $result.Notes "ERROR"
+        return $result
+    }
+    if ([string]::IsNullOrWhiteSpace($BkPath)) {
+        $result.Status = "FAILED"
+        $result.Notes  = "Backup path is blank"
+        Write-Log $result.Notes "ERROR"
+        return $result
+    }
+
+    # Check sqlcmd is available
     if (-not $script:DryRunMode -and -not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) {
         $result.Status = "FAILED"
         $result.Notes  = "sqlcmd.exe not found in PATH"
@@ -105,7 +143,7 @@ function Backup-SingleDatabase {
         Write-Log "Would check for sqlcmd in PATH" "DRYRUN"
     }
 
-    # -- Create backup directory --
+    # Create backup directory
     if (-not (Test-Path $BkPath)) {
         if ($script:DryRunMode) {
             Write-Log "Would create directory: $BkPath" "DRYRUN"
@@ -122,15 +160,19 @@ function Backup-SingleDatabase {
         }
     }
 
-    # -- Verify database exists --
+    # Get safe DB names
+    $dbNameLiteral     = Convert-ToSqlNLiteral $DbName
+    $dbNameIdentifier  = Convert-ToSqlBracketIdentifier $DbName
+
+    # Verify database exists
     if ($script:DryRunMode) {
         Write-Log "Would verify database [$DbName] exists on $Instance" "DRYRUN"
     } else {
         Write-Log "Verifying database [$DbName] on $Instance ..."
-        $checkSql = "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE name = N'$DbName';"
+        $checkSql = "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE name = $dbNameLiteral;"
         $dbCheck  = sqlcmd -S $Instance -Q $checkSql -h -1 -W 2>&1
 
-        if ($LASTEXITCODE -ne 0 -or -not ($dbCheck -match [regex]::Escape($DbName))) {
+        if ($LASTEXITCODE -ne 0 -or -not (($dbCheck | Out-String).Trim() -match [regex]::Escape($DbName))) {
             $result.Status = "FAILED"
             $result.Notes  = "Database not found on $Instance"
             Write-Log $result.Notes "ERROR"
@@ -140,25 +182,29 @@ function Backup-SingleDatabase {
         Write-Log "Database [$DbName] verified." "SUCCESS"
     }
 
-    # -- Perform the backup --
+    # Perform the backup
     $ts         = Get-Date -Format "yyyyMMdd_HHmmss"
-    $backupFile = Join-Path $BkPath "${DbName}_${ts}.bak"
+    $backupFile = Join-Path $BkPath ("{0}_{1}.bak" -f $DbName, $ts)
+
+    $backupFileLiteral = Convert-ToSqlNLiteral $backupFile
+    $backupNameLiteral = Convert-ToSqlNLiteral ("{0}-Full-{1}" -f $DbName, $ts)
 
     $backupSql = @"
-BACKUP DATABASE [$DbName]
-TO DISK = N'$backupFile'
+BACKUP DATABASE $dbNameIdentifier
+TO DISK = $backupFileLiteral
 WITH
-    COMPRESSION,
+				
     INIT,
     CHECKSUM,
     STATS = 10,
-    NAME = N'$DbName-Full-$ts';
+    NAME = $backupNameLiteral;
 "@
 
+    # Check for dry run mode and report or run backup
     if ($script:DryRunMode) {
         Write-Log "Would execute backup:" "DRYRUN"
         Write-Log "  Target file: $backupFile" "DRYRUN"
-        Write-Log "  SQL: BACKUP DATABASE [$DbName] TO DISK ... WITH COMPRESSION, INIT, CHECKSUM" "DRYRUN"
+        Write-Log "  SQL: BACKUP DATABASE [$DbName] TO DISK ... WITH INIT, CHECKSUM, STATS = 10" "DRYRUN"
         Write-Log "Would verify backup with RESTORE VERIFYONLY ... WITH CHECKSUM" "DRYRUN"
 
         $result.BackupFile = $backupFile
@@ -168,6 +214,7 @@ WITH
         Write-Log "Starting backup -> $backupFile"
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
+        # Backup Database
         $sqlOut = sqlcmd -S $Instance -Q $backupSql -b 2>&1
 
         if ($LASTEXITCODE -ne 0) {
@@ -183,18 +230,33 @@ WITH
         $sw.Stop()
         $result.Duration   = $sw.Elapsed.ToString("mm\:ss")
         $result.BackupFile = $backupFile
-        $result.SizeMB     = [Math]::Round((Get-Item $backupFile).Length / 1MB, 2)
+																				  
+        if (-not (Test-Path $backupFile)) {
+            $result.Status = "FAILED"
+            $result.Notes  = "Backup command completed but file was not found: $backupFile"
+            Write-Log $result.Notes "ERROR"
+            return $result
+        }
+
+        try {
+            $result.SizeMB = [Math]::Round((Get-Item $backupFile).Length / 1MB, 2)
+        } catch {
+            $result.SizeMB = 0
+        }
 
         Write-Log "Backup completed in $($result.Duration) - Size: $($result.SizeMB) MB" "SUCCESS"
 
-        # -- Verify backup integrity --
+        # Verify backup integrity
         Write-Log "Verifying backup checksum ..."
-        $verifySql    = "RESTORE VERIFYONLY FROM DISK = N'$backupFile' WITH CHECKSUM;"
+        $verifySql    = "RESTORE VERIFYONLY FROM DISK = $backupFileLiteral WITH CHECKSUM;"
         $verifyResult = sqlcmd -S $Instance -Q $verifySql -b 2>&1
 
         if ($LASTEXITCODE -ne 0) {
             $result.Status = "VERIFY_FAILED"
-            $result.Notes  = "Backup file created but integrity check failed"
+            $result.Notes  = ($verifyResult | Out-String).Trim()
+            if ([string]::IsNullOrWhiteSpace($result.Notes)) {
+                $result.Notes = "Backup file created but integrity check failed"
+            }
             Write-Log $result.Notes "ERROR"
             return $result
         }
@@ -202,11 +264,11 @@ WITH
         Write-Log "Backup integrity verified." "SUCCESS"
     }
 
-    # -- Retention cleanup --
+    # Retention cleanup --
     Write-Log "Applying retention policy (keep newest $Retain) ..."
 
     if (Test-Path $BkPath) {
-        $allBackups = Get-ChildItem -Path $BkPath -Filter "${DbName}_*.bak" |
+        $allBackups = Get-ChildItem -Path $BkPath -Filter ("{0}_*.bak" -f $DbName) -File |
                       Sort-Object LastWriteTime -Descending
     } else {
         $allBackups = @()
@@ -251,6 +313,7 @@ WITH
 }
 
 # --- Send HTML email report ----------------------------------------------------
+
 function Send-Report {
     param(
         [hashtable]$SmtpConfig,
@@ -297,14 +360,19 @@ function Send-Report {
             "VERIFY_FAILED" { "&#9888;"  }
             default         { "&#10060;" }
         }
+
+        # Get safe DB name and notes
+        $notesEscaped = [System.Net.WebUtility]::HtmlEncode([string]$r.Notes)
+        $dbEscaped    = [System.Net.WebUtility]::HtmlEncode([string]$r.Database)
+
         $rows += @"
         <tr>
-            <td style="padding:8px;border:1px solid #ddd;">$($r.Database)</td>
+            <td style="padding:8px;border:1px solid #ddd;">$dbEscaped</td>
             <td style="padding:8px;border:1px solid #ddd;color:${color};font-weight:bold;">$icon $($r.Status)</td>
             <td style="padding:8px;border:1px solid #ddd;text-align:right;">$($r.SizeMB) MB</td>
             <td style="padding:8px;border:1px solid #ddd;text-align:center;">$($r.Duration)</td>
             <td style="padding:8px;border:1px solid #ddd;text-align:center;">$($r.Retained) kept / $($r.Deleted) purged</td>
-            <td style="padding:8px;border:1px solid #ddd;font-size:0.9em;">$($r.Notes)</td>
+            <td style="padding:8px;border:1px solid #ddd;font-size:0.9em;">$notesEscaped</td>
         </tr>
 "@
     }
@@ -357,7 +425,11 @@ function Send-Report {
         $msg.IsBodyHtml = $true
 
         $recipients = @($SmtpConfig.To)
-        foreach ($to in $recipients) { $msg.To.Add($to) }
+        foreach ($to in $recipients) {
+            if (-not [string]::IsNullOrWhiteSpace($to)) {
+                $msg.To.Add($to)
+            }
+        }
 
         $smtp           = New-Object System.Net.Mail.SmtpClient($SmtpConfig.Server, $SmtpConfig.Port)
         $smtp.EnableSsl = [bool]$SmtpConfig.UseSsl
@@ -392,22 +464,28 @@ if ($script:DryRunMode) {
     Write-Host ""
     Write-Host "  +============================================+" -ForegroundColor Cyan
     Write-Host "  |         DRY-RUN MODE - NO CHANGES          |" -ForegroundColor Cyan
-    Write-Host "  |   No backups, deletions, or emails sent     |" -ForegroundColor Cyan
+    Write-Host "  |   No backups, deletions, or emails sent    |" -ForegroundColor Cyan
     Write-Host "  +============================================+" -ForegroundColor Cyan
     Write-Host ""
 }
 
 # --- CONFIG FILE MODE ----------------------------------------------------------
+
 if ($ConfigFile) {
     if (-not (Test-Path $ConfigFile)) {
         Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
         exit 1
     }
 
-    $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    try {
+        $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    } catch {
+        Write-Log "Failed to parse config file: $_" "ERROR"
+        exit 1
+    }
 
     $globalInstance       = if ($config.ServerInstance) { $config.ServerInstance } else { ".\SQLEXPRESS" }
-    $globalRetain         = if ($config.RetainCount)   { $config.RetainCount }   else { 5 }
+    $globalRetain         = if ($config.RetainCount -and [int]$config.RetainCount -gt 0) { [int]$config.RetainCount } else { 5 }
     $script:ActiveLogFile = if (-not $script:DryRunMode) { $config.LogFile } else { $null }
 
     Write-Log "================================================================="
@@ -428,7 +506,7 @@ if ($ConfigFile) {
 
     foreach ($db in $config.Databases) {
         $dbInstance = if ($db.ServerInstance) { $db.ServerInstance } else { $globalInstance }
-        $dbRetain   = if ($db.RetainCount -and $db.RetainCount -gt 0) { $db.RetainCount } else { $globalRetain }
+        $dbRetain   = if ($db.RetainCount -and [int]$db.RetainCount -gt 0) { [int]$db.RetainCount } else { $globalRetain }
 
         Write-Log ""
         Write-Log "-----------------------------------------------------------------"
@@ -454,15 +532,16 @@ if ($ConfigFile) {
     if ($config.Smtp -and $config.Smtp.Server) {
         $smtpHash = @{
             Server        = $config.Smtp.Server
-            Port          = if ($config.Smtp.Port) { $config.Smtp.Port } else { 25 }
+            Port          = if ($config.Smtp.Port) { [int]$config.Smtp.Port } else { 25 }
             From          = $config.Smtp.From
             To            = @($config.Smtp.To)
             UseSsl        = [bool]$config.Smtp.UseSsl
             Username      = $config.Smtp.Username
             Password      = $config.Smtp.Password
-            SendOnSuccess = if ($null -ne $config.Smtp.SendOnSuccess) { $config.Smtp.SendOnSuccess } else { $true }
-            SendOnFailure = if ($null -ne $config.Smtp.SendOnFailure) { $config.Smtp.SendOnFailure } else { $true }
+            SendOnSuccess = if ($null -ne $config.Smtp.SendOnSuccess) { [bool]$config.Smtp.SendOnSuccess } else { $true }
+            SendOnFailure = if ($null -ne $config.Smtp.SendOnFailure) { [bool]$config.Smtp.SendOnFailure } else { $true }
         }
+
         Send-Report -SmtpConfig $smtpHash -Results $allResults -ServerName $serverName
     } else {
         Write-Log "No SMTP configuration found - skipping email report."
@@ -471,19 +550,27 @@ if ($ConfigFile) {
     if ($failed -gt 0) { exit 1 } else { exit 0 }
 }
 
-
-# --- SINGLE DATABASE MODE (original behavior) ---------------------------------
+# --- SINGLE DATABASE MODE ------------------------------------------------------
+																				
 
 $script:ActiveLogFile = if (-not $script:DryRunMode) { $LogFile } else { $null }
 
 if (-not $DatabaseName) {
     $DatabaseName = Read-Host "Enter the database name to back up"
-    if (-not $DatabaseName) { Write-Log "Database name is required." "ERROR"; exit 1 }
+    if (-not $DatabaseName) {
+        Write-Log "Database name is required." "ERROR"
+        exit 1
+    }
 }
+
 if (-not $BackupPath) {
     $BackupPath = Read-Host "Enter the backup destination folder path"
-    if (-not $BackupPath) { Write-Log "Backup path is required." "ERROR"; exit 1 }
+    if (-not $BackupPath) {
+        Write-Log "Backup path is required." "ERROR"
+        exit 1
+    }
 }
+
 if ($RetainCount -le 0) {
     $retainInput = Read-Host "Number of backups to retain [default: 5]"
     if ($retainInput -and $retainInput -match '^\d+$') {
