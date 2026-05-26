@@ -97,7 +97,7 @@ function Write-Log {
 }
 
 # --- Backup a single database -------------------------------------------------
-s
+
 function Backup-SingleDatabase {
     param(
         [string]$DbName,
