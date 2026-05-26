@@ -322,7 +322,7 @@ function Send-Report {
     )
 
     $totalCount   = $Results.Count
-    $successCount = ($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
+    $successCount = @($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
     $failCount    = $totalCount - $successCount
     $allPassed    = $failCount -eq 0
 
@@ -521,7 +521,7 @@ if ($ConfigFile) {
         $allResults += $r
     }
 
-    $passed = ($allResults | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
+    $passed = @($allResults | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
     $failed = $allResults.Count - $passed
 
     Write-Log ""
