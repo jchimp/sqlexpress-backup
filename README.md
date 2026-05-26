@@ -1,6 +1,6 @@
 # SQL Express Backup Toolkit
 
-PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Supports multi-database configs, compression, retention cleanup, integrity verification, SMTP email reports, and dry-run testing.
+PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Supports multi-database configs, retention cleanup, integrity verification, SMTP email reports, and dry-run testing.
 
 ## Files
 
@@ -15,14 +15,13 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 
 - Windows with PowerShell 5.1+
 - SQL Server command-line tools (`sqlcmd` in PATH)
-- SQL Server 2016 SP1+ for `WITH COMPRESSION` on Express edition (remove `, COMPRESSION` from the script for older builds)
 
 ## How It Works
 
 1. Reads `Backup-SqlExpressDB.json` for the list of databases, backup paths, retention counts, and SMTP settings
 2. Loops through each database entry and for each one:
    - Verifies the database exists on the SQL instance via `sqlcmd`
-   - Runs `BACKUP DATABASE ... WITH COMPRESSION, INIT, CHECKSUM` via `sqlcmd`
+   - Runs `BACKUP DATABASE ... WITH INIT, CHECKSUM` via `sqlcmd`
    - Verifies the backup file with `RESTORE VERIFYONLY ... WITH CHECKSUM`
    - Applies retention policy — keeps the newest N backups, deletes the rest
 3. Sends an HTML email summary via SMTP with per-database status
