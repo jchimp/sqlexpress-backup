@@ -40,7 +40,7 @@
     .\Backup-SqlExpressDB.ps1
 
     # Single database mode - parameterized:
-    .\Backup-SqlExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7
+    .\Backup-SqlExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7
 #>
 
 param(
@@ -53,9 +53,9 @@ param(
     [switch]$DryRun
 )
 
-
-# --- Helpers ------------------------------------------------------------------
-
+#------------------------------------------------------------------------------
+# Helpers
+#------------------------------------------------------------------------------
 function Convert-ToSqlNLiteral {
     param([AllowNull()][string]$Value)
     if ($null -eq $Value) { return "NULL" }
@@ -67,7 +67,9 @@ function Convert-ToSqlBracketIdentifier {
     return "[" + ($Name -replace "]", "]]") + "]"
 }
 
-# --- Logging helper -----------------------------------------------------------
+#------------------------------------------------------------------------------
+# Logging
+#------------------------------------------------------------------------------
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
 
@@ -96,8 +98,9 @@ function Write-Log {
     }
 }
 
-# --- Backup a single database -------------------------------------------------
-
+#------------------------------------------------------------------------------
+# Backup single database
+#------------------------------------------------------------------------------
 function Backup-SingleDatabase {
     param(
         [string]$DbName,
@@ -186,9 +189,11 @@ function Backup-SingleDatabase {
     $ts         = Get-Date -Format "yyyyMMdd_HHmmss"
     $backupFile = Join-Path $BkPath ("{0}_{1}.bak" -f $DbName, $ts)
 
+    # Get safe backup and filenames
     $backupFileLiteral = Convert-ToSqlNLiteral $backupFile
     $backupNameLiteral = Convert-ToSqlNLiteral ("{0}-Full-{1}" -f $DbName, $ts)
 
+    # Backup sqlcmd
     $backupSql = @"
 BACKUP DATABASE $dbNameIdentifier
 TO DISK = $backupFileLiteral
@@ -249,6 +254,7 @@ WITH
         # Verify backup integrity
         Write-Log "Verifying backup checksum ..."
         $verifySql    = "RESTORE VERIFYONLY FROM DISK = $backupFileLiteral WITH CHECKSUM;"
+        
         $verifyResult = sqlcmd -S $Instance -Q $verifySql -b 2>&1
 
         if ($LASTEXITCODE -ne 0) {
@@ -264,7 +270,7 @@ WITH
         Write-Log "Backup integrity verified." "SUCCESS"
     }
 
-    # Retention cleanup --
+    # Retention cleanup
     Write-Log "Applying retention policy (keep newest $Retain) ..."
 
     if (Test-Path $BkPath) {
@@ -312,8 +318,9 @@ WITH
     return $result
 }
 
-# --- Send HTML email report ----------------------------------------------------
-
+#------------------------------------------------------------------------------
+# Send HTML email 
+#------------------------------------------------------------------------------
 function Send-Report {
     param(
         [hashtable]$SmtpConfig,
@@ -321,6 +328,7 @@ function Send-Report {
         [string]$ServerName
     )
 
+    # Calculate success and failure counts
     $totalCount   = $Results.Count
     $successCount = @($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
     $failCount    = $totalCount - $successCount
@@ -337,15 +345,16 @@ function Send-Report {
 
     $dryTag = if ($script:DryRunMode) { " [DRY-RUN]" } else { "" }
 
+    # Subject & status
     $subjectLine = if ($allPassed) {
         "Backup OK: $totalCount/$totalCount on $ServerName$dryTag"
     } else {
         "BACKUP ALERT: $failCount FAILED on $ServerName$dryTag"
     }
-
     $statusEmoji = if ($allPassed) { "&#9989;" } else { "&#10060;" }
     $statusText  = if ($allPassed) { "All Backups Succeeded" } else { "$failCount of $totalCount Failed" }
 
+    # Build results list
     $rows = ""
     foreach ($r in $Results) {
         $color = switch ($r.Status) {
@@ -417,11 +426,12 @@ function Send-Report {
         return
     }
 
+    # Build email
     try {
-        $msg            = New-Object System.Net.Mail.MailMessage
-        $msg.From       = New-Object System.Net.Mail.MailAddress($SmtpConfig.From)
-        $msg.Subject    = $subjectLine
-        $msg.Body       = $html
+        $msg  = New-Object System.Net.Mail.MailMessage
+        $msg.From = New-Object System.Net.Mail.MailAddress($SmtpConfig.From)
+        $msg.Subject = $subjectLine
+        $msg.Body = $html
         $msg.IsBodyHtml = $true
 
         $recipients = @($SmtpConfig.To)
@@ -431,7 +441,7 @@ function Send-Report {
             }
         }
 
-        $smtp           = New-Object System.Net.Mail.SmtpClient($SmtpConfig.Server, $SmtpConfig.Port)
+        $smtp = New-Object System.Net.Mail.SmtpClient($SmtpConfig.Server, $SmtpConfig.Port)
         $smtp.EnableSsl = [bool]$SmtpConfig.UseSsl
 
         if ($SmtpConfig.Username -and $SmtpConfig.Password) {
@@ -440,6 +450,7 @@ function Send-Report {
             )
         }
 
+        # Send email
         $smtp.Send($msg)
         Write-Log "Email report sent to: $($recipients -join ', ')" "SUCCESS"
     }
@@ -453,10 +464,9 @@ function Send-Report {
 }
 
 
-# ===============================================================================
-#  MAIN EXECUTION
-# ===============================================================================
-
+#===============================================================================
+# MAIN EXECUTION
+#===============================================================================
 $script:DryRunMode = $DryRun.IsPresent
 $serverName = $env:COMPUTERNAME
 
@@ -469,8 +479,9 @@ if ($script:DryRunMode) {
     Write-Host ""
 }
 
-# --- CONFIG FILE MODE ----------------------------------------------------------
-
+#------------------------------------------------------------------------------
+# CONFIG FILE MODE
+#------------------------------------------------------------------------------
 if ($ConfigFile) {
     if (-not (Test-Path $ConfigFile)) {
         Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
@@ -502,8 +513,8 @@ if ($ConfigFile) {
         exit 1
     }
 
+    # Loop through our configured databases and back each one up
     $allResults = @()
-
     foreach ($db in $config.Databases) {
         $dbInstance = if ($db.ServerInstance) { $db.ServerInstance } else { $globalInstance }
         $dbRetain   = if ($db.RetainCount -and [int]$db.RetainCount -gt 0) { [int]$db.RetainCount } else { $globalRetain }
@@ -513,6 +524,7 @@ if ($ConfigFile) {
         Write-Log "Processing: $($db.Name)  [Instance: $dbInstance | Retain: $dbRetain]"
         Write-Log "-----------------------------------------------------------------"
 
+        # Backup each database
         $r = Backup-SingleDatabase -DbName $db.Name `
                                    -BkPath $db.BackupPath `
                                    -Retain $dbRetain `
@@ -521,6 +533,7 @@ if ($ConfigFile) {
         $allResults += $r
     }
 
+    # Calculate results
     $passed = @($allResults | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
     $failed = $allResults.Count - $passed
 
@@ -550,9 +563,9 @@ if ($ConfigFile) {
     if ($failed -gt 0) { exit 1 } else { exit 0 }
 }
 
-# --- SINGLE DATABASE MODE ------------------------------------------------------
-																				
-
+#------------------------------------------------------------------------------
+# SINGLE DATABASE MODE
+#------------------------------------------------------------------------------																				
 $script:ActiveLogFile = if (-not $script:DryRunMode) { $LogFile } else { $null }
 
 if (-not $DatabaseName) {
@@ -585,6 +598,7 @@ Write-Log "SQL Express Backup - Single Database Mode"
 if ($script:DryRunMode) { Write-Log "  Mode: DRY-RUN (no changes will be made)" "DRYRUN" }
 Write-Log "================================================================="
 
+# Backup single database
 $r = Backup-SingleDatabase -DbName $DatabaseName `
                            -BkPath $BackupPath `
                            -Retain $RetainCount `
