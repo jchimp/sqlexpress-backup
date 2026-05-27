@@ -6,10 +6,12 @@
     Reads a JSON config file to back up one or more SQL Express databases using sqlcmd.
     Features: checksum verification, retention cleanup, HTML email report.
     Also supports single-database mode via command-line parameters for one-off runs.
+    If Backup-SQLExpressDB.json exists in the same directory as the script, it is loaded automatically.
     Use -DryRun to simulate the entire process without executing sqlcmd or deleting files.
 
 .PARAMETER ConfigFile
     Path to a JSON configuration file defining databases and SMTP settings.
+    Default: Backup-SQLExpressDB.json in the same directory as the script.
 
 .PARAMETER DatabaseName
     (Single mode) Name of the database to back up.
@@ -30,17 +32,24 @@
     Simulates the backup process without running sqlcmd or deleting files.
 
 .EXAMPLE
-    # Dry run with config (see what would happen):
-    .\Backup-SqlExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SqlExpressDB.json" -DryRun
+    # Auto-detect config file from same folder
+    .\Backup-SQLExpressDB.ps1
 
-    # Config mode - multiple databases + email report:
-    .\Backup-SqlExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SqlExpressDB.json"
+.EXAMPLE
+    # Dry run with auto-detected config file
+    .\Backup-SQLExpressDB.ps1 -DryRun
 
-    # Single database mode - interactive prompts:
-    .\Backup-SqlExpressDB.ps1
+.EXAMPLE
+    # Use an explicit config file
+    .\Backup-SQLExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SQLExpressDB.json"
 
-    # Single database mode - parameterized:
-    .\Backup-SqlExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7
+.EXAMPLE
+    # Single database mode - interactive prompts
+    .\Backup-SQLExpressDB.ps1
+
+.EXAMPLE
+    # Single database mode - parameterized
+    .\Backup-SQLExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7
 #>
 
 param(
@@ -67,6 +76,38 @@ function Convert-ToSqlBracketIdentifier {
     return "[" + ($Name -replace "]", "]]") + "]"
 }
 
+function Convert-ToSafeFileName {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+    $sb = New-Object System.Text.StringBuilder
+
+    foreach ($ch in $Name.ToCharArray()) {
+        if ($invalidChars -contains $ch) {
+            [void]$sb.Append('_')
+        }
+        else {
+            [void]$sb.Append($ch)
+        }
+    }
+
+    return $sb.ToString()
+}
+
+function Get-BackupFilesForDatabase {
+    param(
+        [Parameter(Mandatory)][string]$BackupPath,
+        [Parameter(Mandatory)][string]$DbFileStem
+    )
+
+    if (-not (Test-Path -LiteralPath $BackupPath)) {
+        return @()
+    }
+
+    return @(Get-ChildItem -LiteralPath $BackupPath -Filter ("{0}_*.bak" -f $DbFileStem) -File |
+        Sort-Object LastWriteTime -Descending)
+}
+
 #------------------------------------------------------------------------------
 # Logging
 #------------------------------------------------------------------------------
@@ -88,13 +129,81 @@ function Write-Log {
     if ($script:ActiveLogFile) {
         try {
             $logDir = Split-Path -Path $script:ActiveLogFile -Parent
-            if ($logDir -and -not (Test-Path $logDir)) {
+            if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
                 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
             }
             $entry | Out-File -FilePath $script:ActiveLogFile -Append -Encoding UTF8
         } catch {
-            Write-Host "[$ts] [WARN] Failed to write to log file $script:ActiveLogFile : $_" -ForegroundColor Yellow
+            Write-Host "[$ts] [WARN] Failed to write to log file $script:ActiveLogFile : $($_.Exception.Message)" -ForegroundColor Yellow
         }
+    }
+}
+
+#------------------------------------------------------------------------------
+# Retention policy - clean up old backups
+#------------------------------------------------------------------------------
+function Remove-BackupFileSafely {
+    param(
+        [Parameter(Mandatory)][System.IO.FileInfo]$File,
+        [int]$RetryCount = 3,
+        [int]$RetryDelaySeconds = 2
+    )
+
+    if ($script:DryRunMode) {
+        return @{
+            Success = $true
+            Message = "Dry run - no deletion performed"
+        }
+    }
+
+    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+        try {
+            if (-not (Test-Path -LiteralPath $File.FullName)) {
+                return @{
+                    Success = $true
+                    Message = "File already absent"
+                }
+            }
+
+            # Refresh file info
+            $fileItem = Get-Item -LiteralPath $File.FullName -Force
+
+            # Clear common restrictive attributes if present
+            try {
+                [System.IO.File]::SetAttributes($fileItem.FullName, [System.IO.FileAttributes]::Normal)
+            }
+            catch {
+                Write-Log "  Attempt $attempt/$RetryCount - Could not reset attributes on $($fileItem.Name): $($_.Exception.Message)" "WARN"
+            }
+
+            # Remove file
+            Remove-Item -LiteralPath $fileItem.FullName -Force -ErrorAction Stop
+            return @{
+                Success = $true
+                Message = "Deleted successfully"
+            }
+        }
+        catch {
+            $msg = $_.Exception.Message
+            Write-Log "  Attempt $attempt/$RetryCount - Failed to delete $($File.FullName): $msg" "ERROR"
+
+            if ($attempt -lt $RetryCount) {
+                Start-Sleep -Seconds $RetryDelaySeconds
+            }
+        }
+    }
+
+    try {
+        $acl = Get-Acl -LiteralPath $File.FullName -ErrorAction Stop
+        $owner = $acl.Owner
+    }
+    catch {
+        $owner = "Unavailable"
+    }
+
+    return @{
+        Success = $false
+        Message = "Access denied or file locked after $RetryCount attempts. Owner: $owner"
     }
 }
 
@@ -120,7 +229,7 @@ function Backup-SingleDatabase {
         Notes      = ""
     }
 
-    # Check DBName and backup path
+    # Check DBName and backup path amd retention
     if ([string]::IsNullOrWhiteSpace($DbName)) {
         $result.Status = "FAILED"
         $result.Notes  = "Database name is blank"
@@ -133,6 +242,15 @@ function Backup-SingleDatabase {
         Write-Log $result.Notes "ERROR"
         return $result
     }
+    if ($Retain -lt 0) {
+        $result.Status = "FAILED"
+        $result.Notes  = "Retain count cannot be negative"
+        Write-Log $result.Notes "ERROR"
+        return $result
+    }
+
+    # Get safe DB name
+    $dbFileStem = Convert-ToSafeFileName $DbName
 
     # Check sqlcmd is available
     if (-not $script:DryRunMode -and -not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) {
@@ -146,31 +264,34 @@ function Backup-SingleDatabase {
         Write-Log "Would check for sqlcmd in PATH" "DRYRUN"
     }
 
-    # Create backup directory
-    if (-not (Test-Path $BkPath)) {
+    # Create backup directory if needed
+    if (-not (Test-Path -LiteralPath $BkPath)) {
         if ($script:DryRunMode) {
             Write-Log "Would create directory: $BkPath" "DRYRUN"
-        } else {
+        }
+        else {
             Write-Log "Creating backup directory: $BkPath"
             try {
                 New-Item -ItemType Directory -Path $BkPath -Force | Out-Null
-            } catch {
+            }
+            catch {
                 $result.Status = "FAILED"
-                $result.Notes  = "Failed to create directory: $_"
+                $result.Notes  = "Failed to create directory: $($_.Exception.Message)"
                 Write-Log $result.Notes "ERROR"
                 return $result
             }
         }
     }
 
-    # Get safe DB names
-    $dbNameLiteral     = Convert-ToSqlNLiteral $DbName
-    $dbNameIdentifier  = Convert-ToSqlBracketIdentifier $DbName
+    # Safe SQL values
+    $dbNameLiteral    = Convert-ToSqlNLiteral $DbName
+    $dbNameIdentifier = Convert-ToSqlBracketIdentifier $DbName
 
     # Verify database exists
     if ($script:DryRunMode) {
         Write-Log "Would verify database [$DbName] exists on $Instance" "DRYRUN"
-    } else {
+    } 
+    else {
         Write-Log "Verifying database [$DbName] on $Instance ..."
         $checkSql = "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE name = $dbNameLiteral;"
         $dbCheck  = sqlcmd -S $Instance -Q $checkSql -h -1 -W 2>&1
@@ -186,8 +307,8 @@ function Backup-SingleDatabase {
     }
 
     # Perform the backup
-    $ts         = Get-Date -Format "yyyyMMdd_HHmmss"
-    $backupFile = Join-Path $BkPath ("{0}_{1}.bak" -f $DbName, $ts)
+    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+    $backupFile = Join-Path $BkPath ("{0}_{1}.bak" -f $dbFileStem, $ts)
 
     # Get safe backup and filenames
     $backupFileLiteral = Convert-ToSqlNLiteral $backupFile
@@ -236,7 +357,7 @@ WITH
         $result.Duration   = $sw.Elapsed.ToString("mm\:ss")
         $result.BackupFile = $backupFile
 																				  
-        if (-not (Test-Path $backupFile)) {
+        if (-not (Test-Path -LiteralPath $backupFile)) {
             $result.Status = "FAILED"
             $result.Notes  = "Backup command completed but file was not found: $backupFile"
             Write-Log $result.Notes "ERROR"
@@ -244,8 +365,9 @@ WITH
         }
 
         try {
-            $result.SizeMB = [Math]::Round((Get-Item $backupFile).Length / 1MB, 2)
-        } catch {
+            $result.SizeMB = [Math]::Round((Get-Item -LiteralPath $backupFile).Length / 1MB, 2)
+        }
+        catch {
             $result.SizeMB = 0
         }
 
@@ -273,46 +395,61 @@ WITH
     # Retention cleanup
     Write-Log "Applying retention policy (keep newest $Retain) ..."
 
-    if (Test-Path $BkPath) {
-        $allBackups = Get-ChildItem -Path $BkPath -Filter ("{0}_*.bak" -f $DbName) -File |
-                      Sort-Object LastWriteTime -Descending
-    } else {
-        $allBackups = @()
-    }
-
-    $result.Retained = [Math]::Min($allBackups.Count, $Retain)
+    $allBackups = Get-BackupFilesForDatabase -BackupPath $BkPath -DbFileStem $dbFileStem
+    $cleanupErrors = @()
 
     if ($allBackups.Count -gt $Retain) {
-        $toDelete       = $allBackups | Select-Object -Skip $Retain
-        $result.Deleted = $toDelete.Count
-
+        $toDelete = $allBackups | Select-Object -Skip $Retain
+										 
         if ($script:DryRunMode) {
             Write-Log "Would delete $($toDelete.Count) old backup(s):" "DRYRUN"
             foreach ($f in $toDelete) {
                 Write-Log "  Would delete: $($f.Name)  ($([Math]::Round($f.Length / 1MB, 2)) MB, $($f.LastWriteTime.ToString('yyyy-MM-dd HH:mm')))" "DRYRUN"
             }
-        } else {
-            foreach ($f in $toDelete) {
-                try {
-                    Remove-Item $f.FullName -Force
-                    Write-Log "  Deleted: $($f.Name)" "WARN"
-                } catch {
-                    Write-Log "  Failed to delete $($f.Name): $_" "ERROR"
-                }
-            }
-            Write-Log "Cleanup complete - removed $($result.Deleted) old backup(s)."
         }
-    } else {
+        else {
+            foreach ($f in $toDelete) {
+
+                # Remove backup file
+                $deleteResult = Remove-BackupFileSafely -File $f -RetryCount 3 -RetryDelaySeconds 2
+                if ($deleteResult.Success) {
+                    $result.Deleted++
+                    Write-Log "  Deleted: $($f.Name)" "WARN"
+                }
+                else {
+                    $cleanupErrors += "$($f.Name): $($deleteResult.Message)"
+                    Write-Log "  Failed to delete $($f.Name): $($deleteResult.Message)" "ERROR"
+                }
+
+            }
+
+            if ($result.Deleted -gt 0) {
+                Write-Log "Cleanup complete - removed $($result.Deleted) old backup(s)."
+            }
+        }
+    }
+    else {
         $msg = "No cleanup needed ($($allBackups.Count) backups <= $Retain retention limit)."
         if ($script:DryRunMode) { Write-Log $msg "DRYRUN" } else { Write-Log $msg }
     }
 
+    # Refresh retained count after cleanup
+    $remainingBackups = Get-BackupFilesForDatabase -BackupPath $BkPath -DbFileStem $dbFileStem
+    $result.Retained = [Math]::Min($remainingBackups.Count, $Retain)
+
     if ($script:DryRunMode) {
         $result.Status = "DRY-RUN OK"
         $result.Notes  = "Simulated - no changes made"
-    } else {
-        $result.Status = "SUCCESS"
-        $result.Notes  = "Verified OK, $($result.Retained) kept / $($result.Deleted) purged"
+    }
+    else {
+        if ($cleanupErrors.Count -gt 0) {
+            $result.Status = "SUCCESS_WITH_WARNINGS"
+            $result.Notes  = "Backup verified OK, but cleanup had issues: " + ($cleanupErrors -join "; ")
+        }
+        else {
+            $result.Status = "SUCCESS"
+            $result.Notes  = "Verified OK, $($result.Retained) kept / $($result.Deleted) purged"
+        }
     }
 
     return $result
@@ -330,44 +467,57 @@ function Send-Report {
 
     # Calculate success and failure counts
     $totalCount   = $Results.Count
-    $successCount = @($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
-    $failCount    = $totalCount - $successCount
-    $allPassed    = $failCount -eq 0
+    $successCount = ($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
+    $warningCount = ($Results | Where-Object { $_.Status -eq "SUCCESS_WITH_WARNINGS" }).Count
+    $failCount    = ($Results | Where-Object { $_.Status -notin @("SUCCESS", "DRY-RUN OK", "SUCCESS_WITH_WARNINGS") }).Count
+
+    $hasIssues = ($warningCount -gt 0 -or $failCount -gt 0)
+    $allPassed = ($warningCount -eq 0 -and $failCount -eq 0)
 
     if ($allPassed -and -not $SmtpConfig.SendOnSuccess) {
         Write-Log "All backups succeeded - email suppressed (SendOnSuccess = false)."
         return
     }
-    if (-not $allPassed -and -not $SmtpConfig.SendOnFailure) {
-        Write-Log "Some backups failed - email suppressed (SendOnFailure = false)."
+    if ($hasIssues -and -not $SmtpConfig.SendOnFailure) {
+        Write-Log "Warnings or failures detected - email suppressed (SendOnFailure = false)."
         return
     }
 
     $dryTag = if ($script:DryRunMode) { " [DRY-RUN]" } else { "" }
 
-    # Subject & status
-    $subjectLine = if ($allPassed) {
-        "Backup OK: $totalCount/$totalCount on $ServerName$dryTag"
-    } else {
-        "BACKUP ALERT: $failCount FAILED on $ServerName$dryTag"
+    if ($failCount -gt 0) {
+        $subjectLine = "BACKUP ALERT: $failCount FAILED, $warningCount WARNINGS on $ServerName$dryTag"
+        $statusEmoji = "&#10060;"
+        $statusText  = "$failCount failed, $warningCount warnings, $successCount succeeded"
+															   
     }
-    $statusEmoji = if ($allPassed) { "&#9989;" } else { "&#10060;" }
-    $statusText  = if ($allPassed) { "All Backups Succeeded" } else { "$failCount of $totalCount Failed" }
+    elseif ($warningCount -gt 0) {
+        $subjectLine = "Backup WARNING: $warningCount warning(s) on $ServerName$dryTag"
+        $statusEmoji = "&#9888;"
+        $statusText  = "$warningCount warning(s), $successCount succeeded"
+    }
+    else {
+        $subjectLine = "Backup OK: $successCount/$totalCount on $ServerName$dryTag"
+        $statusEmoji = "&#9989;"
+        $statusText  = "All backups succeeded"
+    }
 
     # Build results list
     $rows = ""
     foreach ($r in $Results) {
         $color = switch ($r.Status) {
-            "SUCCESS"       { "#2e7d32" }
-            "DRY-RUN OK"    { "#0277bd" }
-            "VERIFY_FAILED" { "#e65100" }
-            default         { "#c62828" }
+            "SUCCESS"               { "#2e7d32" }
+            "DRY-RUN OK"            { "#0277bd" }
+            "SUCCESS_WITH_WARNINGS" { "#e65100" }
+            "VERIFY_FAILED"         { "#c62828" }
+            default                 { "#c62828" }
         }
         $icon = switch ($r.Status) {
-            "SUCCESS"       { "&#9989;" }
-            "DRY-RUN OK"    { "&#128309;" }
-            "VERIFY_FAILED" { "&#9888;"  }
-            default         { "&#10060;" }
+            "SUCCESS"               { "&#9989;" }
+            "DRY-RUN OK"            { "&#128309;" }
+            "SUCCESS_WITH_WARNINGS" { "&#9888;" }
+            "VERIFY_FAILED"         { "&#10060;" }
+            default                 { "&#10060;" }
         }
 
         # Get safe DB name and notes
@@ -411,7 +561,7 @@ function Send-Report {
         $rows
     </table>
     <p style="color:#999;font-size:0.85em;margin-top:16px;">
-        Generated by Backup-SqlExpressDB.ps1
+        Generated by Backup-SQLExpressDB.ps1
     </p>
 </body>
 </html>
@@ -437,7 +587,7 @@ function Send-Report {
         $recipients = @($SmtpConfig.To)
         foreach ($to in $recipients) {
             if (-not [string]::IsNullOrWhiteSpace($to)) {
-                $msg.To.Add($to)
+                [void]$msg.To.Add($to)
             }
         }
 
@@ -455,7 +605,7 @@ function Send-Report {
         Write-Log "Email report sent to: $($recipients -join ', ')" "SUCCESS"
     }
     catch {
-        Write-Log "Failed to send email report: $_" "ERROR"
+        Write-Log "Failed to send email report: $($_.Exception.Message)" "ERROR"
     }
     finally {
         if ($msg)  { $msg.Dispose() }
@@ -482,22 +632,24 @@ if ($script:DryRunMode) {
 #------------------------------------------------------------------------------
 # CONFIG FILE MODE
 #------------------------------------------------------------------------------
-if ($ConfigFile) {
-    if (-not (Test-Path $ConfigFile)) {
-        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
-        exit 1
-    }
-
+if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
     try {
-        $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-    } catch {
-        Write-Log "Failed to parse config file: $_" "ERROR"
+        $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
+    }
+    catch {
+        Write-Log "Failed to parse config file: $($_.Exception.Message)" "ERROR"
         exit 1
     }
 
-    $globalInstance       = if ($config.ServerInstance) { $config.ServerInstance } else { ".\SQLEXPRESS" }
-    $globalRetain         = if ($config.RetainCount -and [int]$config.RetainCount -gt 0) { [int]$config.RetainCount } else { 5 }
-    $script:ActiveLogFile = if (-not $script:DryRunMode) { $config.LogFile } else { $null }
+    $globalInstance = if ($config.ServerInstance) { $config.ServerInstance } else { ".\SQLEXPRESS" }
+    $globalRetain   = if ($config.RetainCount -and [int]$config.RetainCount -gt 0) { [int]$config.RetainCount } else { 5 }
+
+    $script:ActiveLogFile = if (-not $script:DryRunMode) {
+        if ($LogFile) { $LogFile } else { $config.LogFile }
+    }
+    else {
+        $null
+    }
 
     Write-Log "================================================================="
     Write-Log "SQL Express Backup - Config Mode"
@@ -505,6 +657,7 @@ if ($ConfigFile) {
     Write-Log "  Server:     $serverName"
     Write-Log "  Instance:   $globalInstance"
     Write-Log "  Databases:  $($config.Databases.Count)"
+    Write-Log "  Running as: $(Get-CurrentIdentityName)"
     if ($script:DryRunMode) { Write-Log "  Mode:       DRY-RUN (no changes will be made)" "DRYRUN" }
     Write-Log "================================================================="
 
@@ -533,13 +686,14 @@ if ($ConfigFile) {
         $allResults += $r
     }
 
-    # Calculate results
-    $passed = @($allResults | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
-    $failed = $allResults.Count - $passed
+    # Calculate results			   
+    $passed   = @($allResults | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
+    $warnings = @($allResults | Where-Object { $_.Status -eq "SUCCESS_WITH_WARNINGS" }).Count
+    $failed   = @($allResults | Where-Object { $_.Status -notin @("SUCCESS", "DRY-RUN OK", "SUCCESS_WITH_WARNINGS") }).Count
 
     Write-Log ""
     Write-Log "================================================================="
-    Write-Log "Batch complete: $passed passed, $failed failed out of $($allResults.Count)."
+    Write-Log "Batch complete: $passed passed, $warnings warnings, $failed failed out of $($allResults.Count)."
     Write-Log "================================================================="
 
     if ($config.Smtp -and $config.Smtp.Server) {
@@ -604,12 +758,18 @@ $r = Backup-SingleDatabase -DbName $DatabaseName `
                            -Retain $RetainCount `
                            -Instance $ServerInstance
 
-if ($r.Status -in @("SUCCESS", "DRY-RUN OK")) {
+if ($r.Status -in @("SUCCESS", "DRY-RUN OK", "SUCCESS_WITH_WARNINGS")) {
     Write-Log "================================================================="
-    Write-Log "Backup job finished successfully." "SUCCESS"
+    if ($r.Status -eq "SUCCESS_WITH_WARNINGS") {
+        Write-Log "Backup job finished with warnings: $($r.Notes)" "WARN"
+    }
+    else {
+        Write-Log "Backup job finished successfully." "SUCCESS"
+    }
     Write-Log "================================================================="
     exit 0
-} else {
+}
+else {
     Write-Log "================================================================="
     Write-Log "Backup job FAILED: $($r.Notes)" "ERROR"
     Write-Log "================================================================="
