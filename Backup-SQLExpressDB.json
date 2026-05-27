@@ -1,7 +1,10 @@
 {
     "ServerInstance": ".\\SQLEXPRESS",
     "RetainCount": 7,
+    "DefaultBackupPath": "D:\\Backups",
     "LogFile": "D:\\Backups\\Backup-SQLExpress_Log.log",
+   
+    "BackupAllUserDatabases": false,
 
     "Smtp": {
         "Server": "mail.yourdomain.com",

@@ -2,9 +2,10 @@
 docs/private
 *.local.md
 NOTES.md
-*.old
-*.tmp
-*.bak
+*.old*
+*.tmp*
+*.bak*
+*.html
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

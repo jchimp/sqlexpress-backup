@@ -108,6 +108,22 @@ function Get-BackupFilesForDatabase {
         Sort-Object LastWriteTime -Descending)
 }
 
+function Get-UserDatabases {
+    param([string]$Instance)
+
+    $sql = "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE' AND name NOT IN ('master','tempdb','model','msdb') ORDER BY name;"
+
+    $output = sqlcmd -S $Instance -Q $sql -h -1 -W 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "Failed to query databases on $Instance" "ERROR"
+        return @()
+    }
+
+    # Filter empty lines and return clean array
+    return @($output | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+}
+
 #------------------------------------------------------------------------------
 # Logging
 #------------------------------------------------------------------------------
@@ -487,7 +503,8 @@ function Send-Report {
     param(
         [hashtable]$SmtpConfig,
         [array]$Results,
-        [string]$ServerName
+        [string]$ServerName,
+        $Config
     )
 
     # Calculate success and failure counts
@@ -525,6 +542,74 @@ function Send-Report {
         $subjectLine = "Backup OK: $successCount/$totalCount on $ServerName$dryTag"
         $statusEmoji = "&#9989;"
         $statusText  = "All backups succeeded"
+    }
+
+    # --- Config summary section ------------------------------------------------
+    $configSummaryHtml = ""
+    if ($Config) {
+        $backupAllFlag = if ($Config.BackupAllUserDatabases -eq $true) {
+            "<span style='color:#2e7d32;font-weight:bold;'>&#9989; Yes - all user databases</span>"
+        } else {
+            "<span style='color:#0277bd;font-weight:bold;'>&#9776; No - selective (config list only)</span>"
+        }
+
+        $globalInstance   = if ($Config.ServerInstance)    { $Config.ServerInstance }    else { ".\SQLEXPRESS" }
+        $globalRetain     = if ($Config.RetainCount)       { $Config.RetainCount }       else { 5 }
+        $defaultPath      = if ($Config.DefaultBackupPath) { $Config.DefaultBackupPath } else { "N/A" }
+
+        $configSummaryHtml = @"
+    <h3 style="margin-bottom:4px;color:#333;">Configuration</h3>
+    <table style="border-collapse:collapse;margin-bottom:10px;">
+        <tr>
+            <td style="padding:4px 12px 4px 0;color:#555;font-weight:bold;">Backup All User DBs:</td>
+            <td style="padding:4px 0;">$backupAllFlag</td>
+        </tr>
+        <tr>
+            <td style="padding:4px 12px 4px 0;color:#555;font-weight:bold;">Server Instance:</td>
+            <td style="padding:4px 0;">$globalInstance</td>
+        </tr>
+        <tr>
+            <td style="padding:4px 12px 4px 0;color:#555;font-weight:bold;">Default Backup Path:</td>
+            <td style="padding:4px 0;">$defaultPath</td>
+        </tr>
+        <tr>
+            <td style="padding:4px 12px 4px 0;color:#555;font-weight:bold;">Default Retention:</td>
+            <td style="padding:4px 0;">$globalRetain copies</td>
+        </tr>
+    </table>
+"@
+
+        # Per-database overrides table (only if Databases array has entries)
+        if ($Config.Databases -and $Config.Databases.Count -gt 0) {
+            $overrideRows = ""
+            foreach ($db in $Config.Databases) {
+                $dbPath     = if ($db.BackupPath)     { $db.BackupPath }     else { "<em>default</em>" }
+                $dbRetain   = if ($db.RetainCount -and $db.RetainCount -gt 0) { "$($db.RetainCount) copies" } else { "<em>default</em>" }
+                $dbInstance = if ($db.ServerInstance)  { $db.ServerInstance }  else { "<em>default</em>" }
+
+                $overrideRows += @"
+            <tr>
+                <td style="padding:4px 8px;border:1px solid #ddd;">$($db.Name)</td>
+                <td style="padding:4px 8px;border:1px solid #ddd;">$dbPath</td>
+                <td style="padding:4px 8px;border:1px solid #ddd;text-align:center;">$dbRetain</td>
+                <td style="padding:4px 8px;border:1px solid #ddd;">$dbInstance</td>
+            </tr>
+"@
+            }
+
+            $configSummaryHtml += @"
+    <h3 style="margin-bottom:4px;color:#333;">Per-Database Overrides</h3>
+    <table style="border-collapse:collapse;margin-bottom:16px;">
+        <tr style="background:#455a64;color:#fff;">
+            <th style="padding:6px 8px;border:1px solid #ddd;text-align:left;">Database</th>
+            <th style="padding:6px 8px;border:1px solid #ddd;text-align:left;">Backup Path</th>
+            <th style="padding:6px 8px;border:1px solid #ddd;text-align:center;">Retention</th>
+            <th style="padding:6px 8px;border:1px solid #ddd;text-align:left;">Instance</th>
+        </tr>
+        $overrideRows
+    </table>
+"@
+        }
     }
 
     # Build results list
@@ -567,13 +652,16 @@ function Send-Report {
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
-<body style="font-family:Segoe UI,Arial,sans-serif;margin:20px;">
+<body style="font-family:Segoe UI,Arial,sans-serif;margin:10px;">
     <h2 style="margin-bottom:4px;">$statusEmoji SQL Express Backup Report$dryTag</h2>
     <p style="color:#555;margin-top:0;">
         <strong>Server:</strong> $ServerName &nbsp;|&nbsp;
         <strong>Time:</strong> $reportTime &nbsp;|&nbsp;
         <strong>Result:</strong> $statusText
     </p>
+    
+    $configSummaryHtml
+
     <table style="border-collapse:collapse;width:100%;margin-top:12px;">
         <tr style="background:#1565c0;color:#fff;">
             <th style="padding:10px;border:1px solid #ddd;text-align:left;">Database</th>
@@ -587,6 +675,9 @@ function Send-Report {
     </table>
     <p style="color:#999;font-size:0.85em;margin-top:16px;">
         Generated by Backup-SQLExpressDB.ps1
+    </p> 
+    <p style="color:#999;font-size:0.85em;margin-top:4px;">
+        GitHub: <a href="https://github.com/jchimp/sqlexpress-backup" style="color:#999;">jchimp/sqlexpress-backup</a>
     </p>
 </body>
 </html>
@@ -685,27 +776,106 @@ if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
     if ($script:DryRunMode) { Write-Log "  Mode:       DRY-RUN (no changes will be made)" "DRYRUN" }
     Write-Log "================================================================="
 
-    if (-not $config.Databases -or $config.Databases.Count -eq 0) {
-        Write-Log "No databases defined in config file. Exiting." "ERROR"
-        exit 1
+    # Build the database list.
+    # Get all our User DBs if needed and all DBs that are overridden in the config file.
+    $dbList = @()
+    if ($config.BackupAllUserDatabases -eq $true) {
+        Write-Log "BackupAllUserDatabases = true - discovering databases on $globalInstance ..."
+
+        if (-not $config.DefaultBackupPath) {
+            Write-Log "DefaultBackupPath is required when BackupAllUserDatabases is true." "ERROR"
+            exit 1
+        }
+
+        $discoveredDbs = Get-UserDatabases -Instance $globalInstance
+
+        if ($discoveredDbs.Count -eq 0) {
+            Write-Log "No user databases found on $globalInstance." "ERROR"
+            exit 1
+        }
+
+        Write-Log "Found $($discoveredDbs.Count) user database(s): $($discoveredDbs -join ', ')"
+
+        # Build override lookup from Databases array
+        $overrides = @{}
+        if ($config.Databases) {
+            foreach ($dbOverride in $config.Databases) {
+                $overrides[$dbOverride.Name] = $dbOverride
+            }
+        }
+
+        # Create database list with overrides
+        foreach ($dbName in $discoveredDbs) {
+            $entryPath     = Join-Path $config.DefaultBackupPath $dbName
+            $entryRetain   = $globalRetain
+            $entryInstance = $globalInstance
+
+            if ($overrides.ContainsKey($dbName)) {
+                $ov = $overrides[$dbName]
+                if ($ov.BackupPath)     { $entryPath     = $ov.BackupPath }
+                if ($ov.RetainCount -and $ov.RetainCount -gt 0) { $entryRetain = $ov.RetainCount }
+                if ($ov.ServerInstance) { $entryInstance = $ov.ServerInstance }
+            }
+
+            $entry = @{}
+            $entry.Name           = $dbName
+            $entry.BackupPath     = $entryPath
+            $entry.RetainCount    = $entryRetain
+            $entry.ServerInstance = $entryInstance
+            $dbList += $entry
+        }
+    }
+    else {
+
+        # Selective mode - use Databases array as-is
+        if (-not $config.Databases -or $config.Databases.Count -eq 0) {
+            Write-Log "No databases defined in config file. Exiting." "ERROR"
+            exit 1
+        }
+
+        # Create database list
+        foreach ($db in $config.Databases) {
+            $entryRetain   = $globalRetain
+            $entryInstance = $globalInstance
+
+            if ($db.RetainCount -and $db.RetainCount -gt 0) { $entryRetain = $db.RetainCount }
+            if ($db.ServerInstance) { $entryInstance = $db.ServerInstance }
+            
+            # BackupPath: use per-DB if set, otherwise DefaultBackupPath\DbName
+            if ($db.BackupPath) {
+                $entryPath = $db.BackupPath
+            }
+            elseif ($config.DefaultBackupPath) {
+                $entryPath = Join-Path $config.DefaultBackupPath $db.Name
+            }
+            else {
+                Write-Log "No BackupPath for [$($db.Name)] and no DefaultBackupPath set." "ERROR"
+                continue
+            }
+
+            $entry = @{}
+            $entry.Name           = $db.Name
+            $entry.BackupPath     = $entryPath
+            $entry.RetainCount    = $entryRetain
+            $entry.ServerInstance = $entryInstance
+            $dbList += $entry
+        }
+
     }
 
-    # Loop through our configured databases and back each one up
+    # Loop through and back up each database
     $allResults = @()
-    foreach ($db in $config.Databases) {
-        $dbInstance = if ($db.ServerInstance) { $db.ServerInstance } else { $globalInstance }
-        $dbRetain   = if ($db.RetainCount -and [int]$db.RetainCount -gt 0) { [int]$db.RetainCount } else { $globalRetain }
-
+    foreach ($db in $dbList) {
         Write-Log ""
         Write-Log "-----------------------------------------------------------------"
-        Write-Log "Processing: $($db.Name)  [Instance: $dbInstance | Retain: $dbRetain]"
+        Write-Log "Processing: $($db.Name)  [Instance: $($db.ServerInstance) | Retain: $($db.RetainCount)]"
         Write-Log "-----------------------------------------------------------------"
 
-        # Backup each database
+        # Backup database
         $r = Backup-SingleDatabase -DbName $db.Name `
                                    -BkPath $db.BackupPath `
-                                   -Retain $dbRetain `
-                                   -Instance $dbInstance
+                                   -Retain $db.RetainCount `
+                                   -Instance $db.ServerInstance
 
         $allResults += $r
     }
@@ -733,8 +903,11 @@ if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
             SendOnFailure = if ($null -ne $config.Smtp.SendOnFailure) { [bool]$config.Smtp.SendOnFailure } else { $true }
         }
 
-        Send-Report -SmtpConfig $smtpHash -Results $allResults -ServerName $serverName
-    } else {
+        # Send email report
+        Send-Report -SmtpConfig $smtpHash -Results $allResults -ServerName $serverName -Config $config
+
+    } 
+    else {
         Write-Log "No SMTP configuration found - skipping email report."
     }
 
