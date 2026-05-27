@@ -111,6 +111,31 @@ function Get-BackupFilesForDatabase {
 #------------------------------------------------------------------------------
 # Logging
 #------------------------------------------------------------------------------
+function Rotate-LogFile {
+    param(
+        [string]$LogPath,
+        [int]$KeepCount = 5
+    )
+
+    if (-not $LogPath -or -not (Test-Path $LogPath)) {
+        return
+    }
+
+    # Work backwards: delete oldest, then shift each file up by 1
+    # .5 → deleted, .4 → .5, .3 → .4, .2 → .3, .1 → .2, current → .1
+    for ($i = $KeepCount; $i -ge 1; $i--) {
+        $source = if ($i -eq 1) { $LogPath } else { "${LogPath}.$($i - 1)" }
+        $dest   = "${LogPath}.$i"
+
+        if (Test-Path $source) {
+            if ($i -eq $KeepCount -and (Test-Path $dest)) {
+                Remove-Item $dest -Force
+            }
+            Rename-Item $source $dest -Force
+        }
+    }
+}
+
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
 
@@ -644,12 +669,11 @@ if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
     $globalInstance = if ($config.ServerInstance) { $config.ServerInstance } else { ".\SQLEXPRESS" }
     $globalRetain   = if ($config.RetainCount -and [int]$config.RetainCount -gt 0) { [int]$config.RetainCount } else { 5 }
 
+    # Get the log file and rotate
     $script:ActiveLogFile = if (-not $script:DryRunMode) {
         if ($LogFile) { $LogFile } else { $config.LogFile }
-    }
-    else {
-        $null
-    }
+    } else { $null }
+    if ($script:ActiveLogFile) { Rotate-LogFile -LogPath $script:ActiveLogFile -KeepCount 5 }
 
     Write-Log "================================================================="
     Write-Log "SQL Express Backup - Config Mode"
@@ -657,7 +681,7 @@ if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
     Write-Log "  Server:     $serverName"
     Write-Log "  Instance:   $globalInstance"
     Write-Log "  Databases:  $($config.Databases.Count)"
-    Write-Log "  Running as: $(Get-CurrentIdentityName)"
+    Write-Log "  Running as: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
     if ($script:DryRunMode) { Write-Log "  Mode:       DRY-RUN (no changes will be made)" "DRYRUN" }
     Write-Log "================================================================="
 
@@ -720,8 +744,13 @@ if ($ConfigFile -and (Test-Path -LiteralPath $ConfigFile)) {
 #------------------------------------------------------------------------------
 # SINGLE DATABASE MODE
 #------------------------------------------------------------------------------																				
-$script:ActiveLogFile = if (-not $script:DryRunMode) { $LogFile } else { $null }
+# Get log file and rotate
+$script:ActiveLogFile = if (-not $script:DryRunMode) {
+    if ($LogFile) { $LogFile } else { $config.LogFile }
+} else { $null }
+if ($script:ActiveLogFile) { Rotate-LogFile -LogPath $script:ActiveLogFile -KeepCount 5 }
 
+# Check parameteres
 if (-not $DatabaseName) {
     $DatabaseName = Read-Host "Enter the database name to back up"
     if (-not $DatabaseName) {
@@ -729,7 +758,6 @@ if (-not $DatabaseName) {
         exit 1
     }
 }
-
 if (-not $BackupPath) {
     $BackupPath = Read-Host "Enter the backup destination folder path"
     if (-not $BackupPath) {
@@ -737,7 +765,6 @@ if (-not $BackupPath) {
         exit 1
     }
 }
-
 if ($RetainCount -le 0) {
     $retainInput = Read-Host "Number of backups to retain [default: 5]"
     if ($retainInput -and $retainInput -match '^\d+$') {
@@ -749,6 +776,7 @@ if ($RetainCount -le 0) {
 
 Write-Log "================================================================="
 Write-Log "SQL Express Backup - Single Database Mode"
+Write-Log "  Running as: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 if ($script:DryRunMode) { Write-Log "  Mode: DRY-RUN (no changes will be made)" "DRYRUN" }
 Write-Log "================================================================="
 
