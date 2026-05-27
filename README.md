@@ -29,27 +29,26 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 
 ## Usage Examples
 
-### Single database (no config file)
+### Command Line
 
 ```powershell
-# Interactive — prompts for database name, path, retention:
-.\Backup-SqlExpressDB.ps1
+    # Auto-detect config file from same folder
+    .\Backup-SQLExpressDB.ps1
 
-# Parameterized:
-.\Backup-SqlExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7
+    # Dry run with auto-detected config file
+    .\Backup-SQLExpressDB.ps1 -DryRun
 
-# Dry run — see what would happen:
-.\Backup-SqlExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7 -DryRun
-```
+    # Use an explicit config file
+    .\Backup-SQLExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SQLExpressDB.json"
 
-### Multi-database with config file
+    # Single database mode - interactive prompts (no config file present)
+    .\Backup-SQLExpressDB.ps1
 
-```powershell
-# Full run:
-.\Backup-SqlExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SqlExpressDB.json"
+    # Single database mode - parameterized
+    .\Backup-SQLExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7
 
-# Dry run first:
-.\Backup-SqlExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SqlExpressDB.json" -DryRun
+    # Single database mode - parameterized dry run
+    .\Backup-SQLExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7 -DryRun
 ```
 
 ### Via BAT launcher (for Task Scheduler)
