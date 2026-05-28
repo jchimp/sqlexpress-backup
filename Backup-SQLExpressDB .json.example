@@ -1,0 +1,36 @@
+{
+    "ServerInstance": ".\\SQLEXPRESS",
+    "RetainCount": 7,
+    "DefaultBackupPath": "D:\\Backups",
+    "BackupAllUserDatabases": false,
+    "LogFile": "D:\\Backups\\Backup-SQLExpress_Log.log",
+   
+    "Smtp": {
+        "Server": "mail.yourdomain.com",
+        "Port": 25,
+        "From": "backups@yourdomain.com",
+        "To": ["admin@yourdomain.com", "user@yourdomain.com"],
+        "UseSsl": false,
+        "Username": "",
+        "Password": "",
+        "SendOnSuccess": true,
+        "SendOnFailure": true
+    },
+
+    "Databases": [
+        {
+            "Name": "Sales",
+            "BackupPath": "D:\\Backups\\Sales"
+        },
+        {
+            "Name": "Inventory",
+            "BackupPath": "D:\\Backups\\Inventory",
+            "RetainCount": 14
+        },
+        {
+            "Name": "HRPortal",
+            "BackupPath": "D:\\Backups\\HRPortal",
+            "ServerInstance": ".\\SQLEXPRESS2"
+        }
+    ]
+}

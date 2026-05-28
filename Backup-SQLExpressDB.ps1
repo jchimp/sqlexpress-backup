@@ -509,9 +509,9 @@ function Send-Report {
 
     # Calculate success and failure counts
     $totalCount   = $Results.Count
-    $successCount = ($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
-    $warningCount = ($Results | Where-Object { $_.Status -eq "SUCCESS_WITH_WARNINGS" }).Count
-    $failCount    = ($Results | Where-Object { $_.Status -notin @("SUCCESS", "DRY-RUN OK", "SUCCESS_WITH_WARNINGS") }).Count
+    $successCount = @($Results | Where-Object { $_.Status -in @("SUCCESS", "DRY-RUN OK") }).Count
+    $warningCount = @($Results | Where-Object { $_.Status -eq "SUCCESS_WITH_WARNINGS" }).Count
+    $failCount    = @($Results | Where-Object { $_.Status -notin @("SUCCESS", "DRY-RUN OK", "SUCCESS_WITH_WARNINGS") }).Count
 
     $hasIssues = ($warningCount -gt 0 -or $failCount -gt 0)
     $allPassed = ($warningCount -eq 0 -and $failCount -eq 0)
@@ -528,18 +528,18 @@ function Send-Report {
     $dryTag = if ($script:DryRunMode) { " [DRY-RUN]" } else { "" }
 
     if ($failCount -gt 0) {
-        $subjectLine = "BACKUP ALERT: $failCount FAILED, $warningCount WARNINGS on $ServerName$dryTag"
+        $subjectLine = "[FAILED] SQL Express Backup on $ServerName$dryTag ($failCount failed, $warningCount warnings)"
         $statusEmoji = "&#10060;"
         $statusText  = "$failCount failed, $warningCount warnings, $successCount succeeded"
 															   
     }
     elseif ($warningCount -gt 0) {
-        $subjectLine = "Backup WARNING: $warningCount warning(s) on $ServerName$dryTag"
+        $subjectLine = "[WARNING] SQL Express Backup on $ServerName$dryTag ($warningCount warnings)"
         $statusEmoji = "&#9888;"
         $statusText  = "$warningCount warning(s), $successCount succeeded"
     }
     else {
-        $subjectLine = "Backup OK: $successCount/$totalCount on $ServerName$dryTag"
+        $subjectLine = "[Success] SQL Express Backup on $ServerName$dryTag ($successCount/$totalCount)"
         $statusEmoji = "&#9989;"
         $statusText  = "All backups succeeded"
     }
