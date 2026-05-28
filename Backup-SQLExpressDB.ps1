@@ -53,7 +53,7 @@
 #>
 
 param(
-    [string]$ConfigFile,
+    [string]$ConfigFile = (Join-Path $PSScriptRoot 'Backup-SQLExpressDB.json'),
     [string]$DatabaseName,
     [string]$BackupPath,
     [int]$RetainCount = 0,
@@ -122,6 +122,65 @@ function Get-UserDatabases {
 
     # Filter empty lines and return clean array
     return @($output | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+}
+
+function Test-JsonConfig {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Log "Config file not found: $Path" "ERROR"
+        return $false
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    }
+    catch {
+        Write-Log "Cannot read config file: $_" "ERROR"
+        return $false
+    }
+    
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        Write-Log "Config file is empty: $Path" "ERROR"
+        return $false
+    }
+
+    try {
+        $null = $raw | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        $errMsg = $_.Exception.Message
+
+        # Try to extract character position and convert to line number
+        if ($errMsg -match '\((\d+)\)') {
+            $charPos = [int]$Matches[1]
+            if ($charPos -le $raw.Length) {
+                $upToError  = $raw.Substring(0, [Math]::Min($charPos, $raw.Length))
+                $lineNum    = ($upToError | Measure-Object -Line).Lines + 1
+                $lineStart  = $upToError.LastIndexOf("`n") + 1
+                $colNum     = $charPos - $lineStart + 1
+                $errorLine  = ($raw -split "`n")[$lineNum - 1].Trim()
+
+                Write-Log "Invalid JSON in config file:" "ERROR"
+                Write-Log "  Line $lineNum, Column $colNum" "ERROR"
+                Write-Log "  Content: $errorLine" "ERROR"
+                Write-Log "  Error:   $errMsg" "ERROR"
+            }
+            else {
+                Write-Log "Invalid JSON in config file: $errMsg" "ERROR"
+            }
+        }
+        else {
+            Write-Log "Invalid JSON in config file: $errMsg" "ERROR"
+        }
+
+        return $false
+    }
+
+    return $true
 }
 
 #------------------------------------------------------------------------------
@@ -744,6 +803,9 @@ if ($script:DryRunMode) {
     Write-Host "  +============================================+" -ForegroundColor Cyan
     Write-Host ""
 }
+
+# Verify config file
+if (-not (Test-JsonConfig -Path $ConfigFile)) { exit 1 }
 
 #------------------------------------------------------------------------------
 # CONFIG FILE MODE
