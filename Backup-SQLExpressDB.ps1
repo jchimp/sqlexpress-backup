@@ -212,7 +212,9 @@ function Write-Log {
 
     $ts    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $tag   = if ($script:DryRunMode) { "[DRY-RUN] " } else { "" }
-    $entry = "[$ts] [$Level] ${tag}$Message"
+    $logLevel = if ($Level -eq "DRYRUN") { "INFO" } else { $Level }
+    $entry    = "[$ts] [$logLevel] ${tag}$Message"
+
 
     switch ($Level) {
         "ERROR"   { Write-Host $entry -ForegroundColor Red }
