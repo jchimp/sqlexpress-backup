@@ -1,4 +1,4 @@
-# SQL Express Backup Toolkit
+# SQL Express Backup
 
 PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Supports multi-database configs, auto-discovery of all user databases, retention cleanup, integrity verification, SMTP email reports, and dry-run testing.
 
@@ -10,7 +10,7 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 | -------------------------- | ------------------------------------------------- |
 | `Backup-SqlExpressDB.ps1`  | Main script — backup, verify, cleanup, email      |
 | `Backup-SqlExpressDB.json` | Config file — databases, retention, SMTP settings |
-| `Backup-SqlExpressDB.bat`  | Thin launcher for Task Scheduler                  |
+| `Backup-SqlExpressDB.bat`  | Batch launcher for Task Scheduler                 |
 
 ### Requirements
 
@@ -30,6 +30,23 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 - Rotates the log file on each run (keeps last 5 copies, logrotate-style)
 - Also supports single-database mode via command-line parameters (no config file needed)
 
+### Installation
+
+1. Clone the repo
+    ```powershell
+    # Clone (or download and extract the zip) to a folder of your choice
+    git clone https://github.com/jchimp/sqlexpress-backup.git C:\Scripts\sqlexpress-backup
+
+    # Or just clone from your root folder (git will create the sub-folder)
+    git clone https://github.com/jchimp/sqlexpress-backup.git
+    ```
+2. Edit `Backup-SqlExpressDB.json` with your databases, SMTP, and backup paths
+3. Test with a dry run:
+    ```powershell
+    .\Backup-SqlExpressDB.ps1 -DryRun
+    ```
+4. Run it for real or set up a [Scheduled Task](#setting-up-the-scheduled-task)
+
 ## Usage Examples
 
 ### Command Line
@@ -44,9 +61,6 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 # Use an explicit config file
 .\Backup-SQLExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SQLExpressDB.json"
 
-# Single database mode - interactive prompts (no config file present)
-.\Backup-SQLExpressDB.ps1
-
 # Single database mode - parameterized
 .\Backup-SQLExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7
 
@@ -54,7 +68,7 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 .\Backup-SQLExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7 -DryRun
 ```
 
-### Via BAT launcher (for Task Scheduler)
+### Via BAT launcher (for Task Scheduler or other tools)
 
 ```bat
 C:\Scripts\Backup-SqlExpressDB.bat

@@ -44,10 +44,6 @@
     .\Backup-SQLExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SQLExpressDB.json"
 
 .EXAMPLE
-    # Single database mode - interactive prompts
-    .\Backup-SQLExpressDB.ps1
-
-.EXAMPLE
     # Single database mode - parameterized
     .\Backup-SQLExpressDB.ps1 -DatabaseName "WebTrack" -BackupPath "D:\Backups\WebTrack" -RetainCount 7
 #>
@@ -406,7 +402,7 @@ function Backup-SingleDatabase {
         Write-Log "Database [$DbName] verified." "SUCCESS"
     }
 
-    # Perform the backup
+    # Build backup filename
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
     $backupFile = Join-Path $BkPath ("{0}_{1}.bak" -f $dbFileStem, $ts)
 
@@ -473,10 +469,10 @@ WITH
 
         Write-Log "Backup completed in $($result.Duration) - Size: $($result.SizeMB) MB" "SUCCESS"
 
-        # Verify backup integrity
         Write-Log "Verifying backup checksum ..."
         $verifySql    = "RESTORE VERIFYONLY FROM DISK = $backupFileLiteral WITH CHECKSUM;"
         
+        # Verify backup
         $verifyResult = sqlcmd -S $Instance -Q $verifySql -b 2>&1
 
         if ($LASTEXITCODE -ne 0) {
