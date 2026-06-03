@@ -1,6 +1,6 @@
-# SQL Express Backup
+# Backup-SQLExpressDB
 
-PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Supports multi-database configs, auto-discovery of all user databases, retention cleanup, integrity verification, SMTP email reports, and dry-run testing.
+PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Supports multi-database configs, auto-discovery of all user databases, retention cleanup, verification,  email reports.
 
 ---
 
@@ -26,19 +26,16 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
   - Runs `BACKUP DATABASE ... WITH INIT, CHECKSUM` via `sqlcmd`
   - Verifies the backup file with `RESTORE VERIFYONLY ... WITH CHECKSUM`
   - Applies retention policy — keeps the newest N backups, deletes the rest
-- Sends an HTML email summary via SMTP with per-database status and config overview
-- Rotates the log file on each run (keeps last 5 copies, logrotate-style)
-- Also supports single-database mode via command-line parameters (no config file needed)
+- Sends an HTML email summary with per-database status
+- Rotates the log file on each run (keeps last 5 copies)
+- Also supports single-database mode via command-line parameters
 
 ### Installation
 
 1. Clone the repo
     ```powershell
-    # Clone (or download and extract the zip) to a folder of your choice
-    git clone https://github.com/jchimp/sqlexpress-backup.git C:\Scripts\sqlexpress-backup
-
-    # Or just clone from your root folder (git will create the sub-folder)
-    git clone https://github.com/jchimp/sqlexpress-backup.git
+    git clone https://github.com/jchimp/backup-sqlexpressdb.git
+    cd backup-sqlexpressdb
     ```
 2. Edit `Backup-SqlExpressDB.json` with your databases, SMTP, and backup paths
 3. Test with a dry run:
@@ -55,40 +52,35 @@ PowerShell-based backup solution for SQL Express databases using `sqlcmd`. Suppo
 # Auto-detect config file from same folder
 .\Backup-SQLExpressDB.ps1
 
-# Dry run with auto-detected config file
+# Dry run test what will happen - works in all modes
 .\Backup-SQLExpressDB.ps1 -DryRun
 
 # Use an explicit config file
-.\Backup-SQLExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SQLExpressDB.json"
+.\Backup-SQLExpressDB.ps1 -ConfigFile "C:\Scripts\backup-sqlexpressdb\Backup-SQLExpressDB.json"
 
-# Single database mode - parameterized
+# Single database mode via parameters
 .\Backup-SQLExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7
-
-# Single database mode - parameterized dry run
-.\Backup-SQLExpressDB.ps1 -DatabaseName "SalesDB" -BackupPath "D:\Backups\SalesDB" -RetainCount 7 -DryRun
 ```
 
-### Via BAT launcher (for Task Scheduler or other tools)
+### Batch File
 
 ```bat
-C:\Scripts\Backup-SqlExpressDB.bat
+C:\backup-sqlexpressdb\Backup-SqlExpressDB.bat
 ```
 
 ### Setting Up the Scheduled Task
 
-1. Place all files in `C:\Scripts\` (or your preferred location)
-2. Edit `Backup-SqlExpressDB.json` with your databases, paths, and SMTP settings
-3. Test with a dry run: `.\Backup-SqlExpressDB.ps1 -ConfigFile "C:\Scripts\Backup-SqlExpressDB.json" -DryRun`
-4. Open **Task Scheduler** → **Create Task** (not "Basic Task")
-5. **General tab:**
+1. Place all files in `C:\Scripts\backup-sqlexpressdb\` (or your preferred location)
+2. Open **Task Scheduler** → **Create Task** (not "Basic Task")
+3. **General tab:**
    - ✅ Run whether user is logged on or not
    - ✅ Run with highest privileges
    - Account: a user with SQL Server `db_backupoperator` or `sysadmin` rights
-6. **Trigger tab:** Set schedule (e.g., daily at 2:00 AM)
-7. **Action tab:**
-   - **Program:** `C:\Scripts\Backup-SqlExpressDB.bat`
-   - **Start in:** `C:\Scripts`
-8. **Settings tab:**
+4. **Trigger tab:** Set schedule (e.g., daily at 2:00 AM)
+5. **Action tab:**
+   - **Program:** `C:\Scripts\backup-sqlexpressdb\Backup-SqlExpressDB.bat`
+   - **Start in:** `C:\Scripts\backup-sqlexpressdb`
+6. **Settings tab:**
    - ✅ Allow task to be run on demand
    - ✅ Stop the task if it runs longer than 1 hour
 
